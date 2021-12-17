@@ -30,10 +30,10 @@ retry_conn_limit_sem = asyncio.Semaphore(5)
 DEFAULT_RETRIES = 5
 
 async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id: str, retries: int = DEFAULT_RETRIES, waittime: int = 60) -> Tuple[str, bytes]:
-    async def tryagain():
+    async def tryagain(waittime: int = waittime*2):
             # Wait and try again, with backoff
             await asyncio.sleep(waittime)
-            return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime+60)
+            return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime)
 
     try:
         async with (new_conn_limit_sem if retries >= DEFAULT_RETRIES else retry_conn_limit_sem):
@@ -48,8 +48,12 @@ async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id:
 
 
 
-        if response.status in [503, 500] and retries > 0:
-            return await tryagain()
+        if retries > 0:
+            if response.status == 503:
+                return await tryagain(waittime*2)
+
+            elif response.status == 500:
+                return await tryagain(waittime+60)
 
         else:
             logger.error(f"Failed {tile_id} {response.status=}")
