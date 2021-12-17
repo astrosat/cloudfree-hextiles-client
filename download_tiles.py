@@ -48,7 +48,7 @@ async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id:
 
 
 
-        if response.status == 503 and retries > 0:
+        if response.status in [503, 500] and retries > 0:
             return await tryagain()
 
         else:
