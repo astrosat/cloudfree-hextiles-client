@@ -33,7 +33,7 @@ async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id:
     async def tryagain():
             # Wait and try again, with backoff
             await asyncio.sleep(waittime)
-            return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime*2)
+            return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime+60)
 
     try:
         async with (new_conn_limit_sem if retries >= DEFAULT_RETRIES else retry_conn_limit_sem):
