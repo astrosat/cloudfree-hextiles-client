@@ -24,24 +24,44 @@ def hex6_url(tile_id: str, year: int, month: int) -> str:
     return HEXTILE_API + f"?hextile={tile_id}&image=TCI&crs=epsg:3857&year={year}&month={month}"
 
 # Only allow N simultaneous connections
-conn_limit_sem = asyncio.Semaphore(10)
+new_conn_limit_sem = asyncio.Semaphore(10)
+retry_conn_limit_sem = asyncio.Semaphore(5)
 
-async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id: str, retries: int = 5, waittime: int = 60) -> Tuple[str, bytes]:
-    async with conn_limit_sem:
-        logger.info(f"Requesting {tile_id} ({retries})")
-        async with session.get(url) as response:
-            logger.debug(f"{retries} Url: {url}")
-            logger.debug(f"{retries} Status: {response.status}")
-            logger.debug(f"{retries} Content-type: {response.headers['content-type']}")
+DEFAULT_RETRIES = 5
 
-    if response.status == 503 and retries > 0:
-        # Wait 60 seconds and try again
-        await asyncio.sleep(60)
-        return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime*2)
+async def download_wait_retry(session: aiohttp.ClientSession, url: str, tile_id: str, retries: int = DEFAULT_RETRIES, waittime: int = 60) -> Tuple[str, bytes]:
+    async def tryagain():
+            # Wait and try again, with backoff
+            await asyncio.sleep(waittime)
+            return await download_wait_retry(session, url, tile_id, retries=retries-1, waittime=waittime*2)
+
+    try:
+        async with (new_conn_limit_sem if retries >= DEFAULT_RETRIES else retry_conn_limit_sem):
+            logger.info(f"Requesting {tile_id} ({retries} attempts left)")
+            async with session.get(url) as response:
+                logger.debug(f"{retries} Url: {url}")
+                logger.debug(f"{retries} Status: {response.status}")
+                logger.debug(f"{retries} Content-type: {response.headers['content-type']}")
+
+                if response.status == 200:
+                    return (tile_id, await response.content.read())
 
 
-    elif response.status == 200:
-        return (tile_id, await response.content.read())
+
+        if response.status == 503 and retries > 0:
+            return await tryagain()
+
+        else:
+            logger.error(f"Failed {tile_id} {response.status=}")
+
+    except aiohttp.ServerConnectionError as e:
+        logger.warning(f"Server connection error {tile_id}: {e}: {url}")
+        return await tryagain()
+
+    except aiohttp.ClientConnectionError as e:
+        logger.warning(f"Client connection error {tile_id}: {e}: {url}")
+        return await tryagain()
+
 
     return tile_id, None
 
@@ -67,20 +87,15 @@ async def main(start_id: str = MUSSELBURGH, distance: int = 1, year: int = 2020,
         tasks: List[Coroutine[None, None, Tuple[str, Optional[bytes]]]] = list([ download_wait_retry(session, url, tid) for (tid, url) in dl_tile_urls ])
 
         for result in asyncio.as_completed(tasks):
-            try:
-                (tile_id, image_bytes) = await result
+            (tile_id, image_bytes) = await result
 
-                if image_bytes is not None:
-                    with io.open(f"{tile_id}.tif", 'wb') as f:
-                        f.write(image_bytes)
+            if image_bytes is not None:
+                with io.open(f"{tile_id}.tif", 'wb') as f:
+                    f.write(image_bytes)
 
-                    logger.info(f"Got {tile_id} {len(image_bytes)}")
+                logger.info(f"Got {tile_id} {len(image_bytes)}")
 
-                else:
-                    logger.warn(f"Failed {tile_id}")
-            except:
-                logger.warn(f"Error?")
-                
+            
 
 def main_(start_id: str = MUSSELBURGH, distance: int = 1, year: int = 2020, month: int = 7, verbose: bool = False):
     logger.info(f"{start_id=} {distance=} {year=} {month=}")
